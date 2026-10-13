@@ -47,9 +47,19 @@ func main() {
 			handleInvite(rawRequest, *registrar, conn, clientAddress)
 			continue
 		}
+		if strings.HasPrefix(rawRequest, "SIP/2.0 180") ||
+			strings.HasPrefix(rawRequest, "SIP/2.0 200") ||
+			strings.HasPrefix(rawRequest, "ACK") {
+			handleRelay(rawRequest, clientAddress, conn, registrar)
+			continue
+		}
 		_, err = conn.WriteToUDP(buffer[:n], clientAddress)
 
 	}
+}
+
+func handleRelay(rawRequest string, clientAddress *net.UDPAddr, conn *net.UDPConn, register *voipinfra.Registrar) {
+
 }
 
 func handleInvite(rawRequest string, registrar voipinfra.Registrar, conn *net.UDPConn, clientAddress *net.UDPAddr) {
