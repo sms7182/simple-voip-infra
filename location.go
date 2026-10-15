@@ -86,3 +86,9 @@ func (r *Registrar) Cleanup(ctx context.Context) {
 		}
 	}
 }
+
+type CallSession struct {
+	CallID     string
+	CallerAddr *net.UDPAddr
+	CalleeAddr *net.UDPAddr
+}

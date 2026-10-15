@@ -11,6 +11,8 @@ import (
 	voipinfra "voip.infra"
 )
 
+var activeCalls = make(map[string]voipinfra.CallSession)
+
 func main() {
 	address, err := net.ResolveUDPAddr("udp", "0.0.0.0:5060")
 	if err != nil {
@@ -40,17 +42,17 @@ func main() {
 		}
 		rawRequest := string(buffer[:n])
 		if strings.HasPrefix(rawRequest, "REGISTER") {
-			handleRegister(rawRequest, *registrar, conn, clientAddress)
+			handleRegister(rawRequest, registrar, conn, clientAddress)
 			continue
 		}
 		if strings.HasPrefix(rawRequest, "INVITE") {
-			handleInvite(rawRequest, *registrar, conn, clientAddress)
+			handleInvite(rawRequest, registrar, conn, clientAddress)
 			continue
 		}
 		if strings.HasPrefix(rawRequest, "SIP/2.0 180") ||
 			strings.HasPrefix(rawRequest, "SIP/2.0 200") ||
 			strings.HasPrefix(rawRequest, "ACK") {
-			handleRelay(rawRequest, clientAddress, conn, registrar)
+			handleRelay(rawRequest, registrar, clientAddress, conn)
 			continue
 		}
 		_, err = conn.WriteToUDP(buffer[:n], clientAddress)
@@ -58,14 +60,90 @@ func main() {
 	}
 }
 
-func handleRelay(rawRequest string, clientAddress *net.UDPAddr, conn *net.UDPConn, register *voipinfra.Registrar) {
-
+func handleRelay(rawRequest string, register *voipinfra.Registrar, clientAddress *net.UDPAddr, conn *net.UDPConn) {
+	callID := getHeader(rawRequest, "Call-ID:")
+	if callID == "" {
+		return
+	}
+	activeSession, ok := activeCalls[callID]
+	if !ok {
+		log.Printf("relay error: no active session found for Call-ID %s", callID)
+		return
+	}
+	clientStr := clientAddress.String()
+	if activeSession.CalleeAddr.String() == clientStr {
+		_, err := conn.WriteToUDP([]byte(rawRequest), activeSession.CallerAddr)
+		if err != nil {
+			log.Printf("Error relaying response to caller: %v", err)
+		} else {
+			log.Printf("Relayed response from Callee to Caller at %s", activeSession.CallerAddr.String())
+		}
+	} else if activeSession.CallerAddr.String() == clientStr {
+		_, err := conn.WriteToUDP([]byte(rawRequest), activeSession.CalleeAddr)
+		if err != nil {
+			log.Printf("Error relaying request to callee: %v", err)
+		} else {
+			log.Printf("Relayed ACK/request from Caller to Callee at %s", activeSession.CalleeAddr.String())
+		}
+	} else {
+		log.Printf("Relay warning: Packet from unknown source address: %s", clientStr)
+	}
 }
 
-func handleInvite(rawRequest string, registrar voipinfra.Registrar, conn *net.UDPConn, clientAddress *net.UDPAddr) {
+func handleInvite(rawRequest string, registrar *voipinfra.Registrar, conn *net.UDPConn, clientAddress *net.UDPAddr) {
+	callID := getHeader(rawRequest, "Call-ID:")
+	cseq := getHeader(rawRequest, "CSeq:")
+	from := getHeader(rawRequest, "From:")
+	to := getHeader(rawRequest, "To:")
+	via := getHeader(rawRequest, "Via:")
+	_ = getHeader(rawRequest, "Contact:")
+
+	username := extractUsername(to)
+	target, ok := registrar.Get(username)
+	if !ok {
+		notFoundResp := fmt.Sprintf("SIP/2.0 404 Not Found\r\n"+
+			"Via: %s\r\n"+
+			"From: %s\r\n"+
+			"To: %s\r\n"+
+			"Call-ID: %s\r\n"+
+			"CSeq: %s\r\n"+
+			"Content-Length: 0\r\n\r\n",
+			via, from, to, callID, cseq,
+		)
+		conn.WriteToUDP([]byte(notFoundResp), clientAddress)
+		log.Printf("Call failed:Extension %s not found", username)
+		return
+	}
+	targetAddress := &net.UDPAddr{
+		IP:   target.IP,
+		Port: target.Port,
+	}
+	activeCalls[callID] = voipinfra.CallSession{
+		CallID:     callID,
+		CallerAddr: clientAddress,
+		CalleeAddr: targetAddress,
+	}
+	tryingResp := fmt.Sprintf(
+		"SIP/2.0 100 Trying\r\n"+
+			"Via: %s\r\n"+
+			"From: %s\r\n"+
+			"To: %s\r\n"+
+			"Call-ID: %s\r\n"+
+			"CSeq: %s\r\n"+
+			"Content-Length: 0\r\n\r\n",
+		via, from, to, callID, cseq,
+	)
+	conn.WriteToUDP([]byte(tryingResp), clientAddress)
+	_, err := conn.WriteToUDP([]byte(rawRequest), targetAddress)
+	if err != nil {
+		log.Printf("Error forwarding INVITE to %s: %v", username, err)
+		return
+	}
+
+	log.Printf("Successfully routed INVITE from Caller to %s at %s", username, targetAddress.String())
 
 }
-func handleRegister(rawRequest string, registrar voipinfra.Registrar, conn *net.UDPConn, clientAddress *net.UDPAddr) {
+func handleRegister(rawRequest string, registrar *voipinfra.Registrar, conn *net.UDPConn, clientAddress *net.UDPAddr) {
 	callID := getHeader(rawRequest, "Call-ID:")
 	cseq := getHeader(rawRequest, "CSeq:")
 	from := getHeader(rawRequest, "From:")
