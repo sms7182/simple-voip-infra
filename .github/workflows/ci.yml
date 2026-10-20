@@ -23,8 +23,6 @@ jobs:
         with:
           authkey: ${{ secrets.TS_AUTHKEY }}
           hostname: github-voip-runner
-          # Ensures routing works correctly for UDP/SIP packets
-          args: --advertise-tags=tag:container
 
       - name: Build and Start Docker Container
         run: |
