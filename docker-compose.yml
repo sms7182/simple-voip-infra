@@ -1,0 +1,14 @@
+version: '3.8'
+
+services:
+  sip-server:
+    build: .
+    container_name: go-sip-server
+    restart: unless-stopped
+    ports:
+      - "5060:5060/udp"
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
