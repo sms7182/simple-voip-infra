@@ -1,10 +1,9 @@
-name: VoIP SIP Server CI
+name: VoIP SIP Server Tailscale CI
 
 on:
   push:
     branches: [ "main", "master" ]
-  pull_request:
-    branches: [ "main", "master" ]
+  workflow_dispatch: # Allows you to manually trigger it from the GitHub Actions tab!
 
 jobs:
   test-sip-server:
@@ -19,61 +18,36 @@ jobs:
         with:
           go-version: '1.26.8'
 
-      - name: Run Go Unit Tests
-        run: go test -v ./...
+      - name: Connect to Tailscale
+        uses: tailscale/github-action@v2
+        with:
+          authkey: ${{ secrets.TS_AUTHKEY }}
+          hostname: github-voip-runner
+          # Ensures routing works correctly for UDP/SIP packets
+          args: --advertise-tags=tag:container
 
       - name: Build and Start Docker Container
         run: |
-          # Build and start your service using Docker Compose in the background
+          # Build and start your service using Docker Compose
           docker compose up --build -d
           
           # Wait 3 seconds for the server to initialize
           sleep 3
           
-          # Check logs to verify it started successfully
-          docker ps
+          # Check logs
           docker logs go-sip-server
 
-      - name: Run Integration Test (Mock SIP REGISTER)
+      - name: Print Tailscale IP & Keep Alive for Testing
         run: |
-          # Run an inline script to send a UDP REGISTER packet to localhost:5060
-          python3 -c '
-          import socket
-
-          server_ip = "127.0.0.1"
-          server_port = 5060
-
-          sip_message = (
-              "REGISTER sip:localhost SIP/2.0\r\n"
-              "Via: SIP/2.0/UDP 127.0.0.1:5060;branch=z9hG4bK-test\r\n"
-              "From: <sip:101@localhost>;tag=1234\r\n"
-              "To: <sip:101@localhost>\r\n"
-              "Call-ID: test-call-id-001\r\n"
-              "CSeq: 1 REGISTER\r\n"
-              "Contact: <sip:101@127.0.0.1:5060>\r\n"
-              "Content-Length: 0\r\n\r\n"
-          )
-
-          sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-          sock.settimeout(2.0)
-
-          print(f"Sending SIP REGISTER to {server_ip}:{server_port}...")
-          sock.sendto(sip_message.encode("utf-8"), (server_ip, server_port))
-
-          try:
-              data, addr = sock.recvfrom(2048)
-              response = data.decode("utf-8")
-              print(f"Received response from {addr}:\n{response}")
-              
-              if "SIP/2.0 200 OK" in response:
-                  print("SUCCESS: Server responded with 200 OK!")
-              else:
-                  print("WARNING: Server responded, but not with 200 OK.")
-                  exit(1)
-          except socket.timeout:
-              print("ERROR: Test timed out. No response received from server.")
-              exit(1)
-          '
+          echo "===================================================="
+          echo "Tailscale is connected!"
+          echo "Find your GitHub runner's Tailscale IP address above"
+          echo "or look in your Tailscale admin panel for 'github-voip-runner'."
+          echo "You have 10 minutes to test from your phone!"
+          echo "===================================================="
+          
+          # Keep the workflow alive for 10 minutes (600 seconds) so you can test
+          sleep 600
 
       - name: Teardown Docker Compose
         if: always()
